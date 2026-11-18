@@ -1,0 +1,243 @@
+USE CASES
+=========
+
+Task-oriented recipes. Commands show bunqctl; add '--env prod' for your real
+account. In the sandbox you can try every recipe with fake money.
+
+Contents: daily - spending - bookkeeping - tax - bills - batch - own accounts
+- savings rules - standing orders - get paid - receipts - cards - scripting -
+sandbox
+
+
+Check balances daily
+--------------------
+
+    bunqctl accounts list
+    bunqctl accounts savings              # goals and progress
+    bunqctl limits                        # how much of the monthly limit is used
+
+Total across active accounts (amounts are strings; jq sums them as floating
+point, so round when printing):
+
+    bunqctl accounts list --json | jq '[.[] | .balance | tonumber] | add'
+
+
+Understand your spending
+------------------------
+
+    bunqctl tx list --from 2026-11-01                       # this month
+    bunqctl tx list --search coffee --from 2026-01-01 --limit 0
+    bunqctl tx list --min 100.00 --from 2026-01-01          # large payments, in or out
+    bunqctl insights                                        # this month per bunq category
+    bunqctl insights --from 2026-01-01 --to 2026-12-31      # a whole year
+    bunqctl events --limit 10                               # everything that happened lately, any type
+
+Spending per counterparty, outgoing only:
+
+    bunqctl tx list --from 2026-01-01 --limit 0 --json \
+      | jq -r '[.[] | select((.amount|tonumber) < 0)]
+               | group_by(.counterparty)
+               | map({who: .[0].counterparty, total: (map(.amount|tonumber)|add)})
+               | sort_by(.total) | .[] | "\(.total)\t\(.who)"'
+
+'tx list' shows one account (the primary account by default). Use
+'--account A' for another one.
+
+
+Monthly bookkeeping
+-------------------
+
+Raw transactions as JSON, for your own tools or a spreadsheet import:
+
+    bunqctl export --account all --from 2026-10-01 --to 2026-10-31 --out 2026-10.json
+
+Official statements, which accountants and accounting software accept:
+
+    bunqctl statement --format mt940 --from 2026-10-01 --to 2026-10-31 --out 2026-10.mt940
+    bunqctl statement --format csv --regional eu --from 2026-10-01 --to 2026-10-31 --out 2026-10.csv
+    bunqctl statement --format pdf --attachments --from 2026-10-01 --to 2026-10-31 --out 2026-10.pdf
+
+statement covers one account; repeat it with --account for the others.
+'export --account all' covers every account in one file. Files are never
+overwritten unless you add --force.
+
+Run it automatically on the first of each month: see bunqctl docs automation.
+
+
+Tax time
+--------
+
+    bunqctl annual-overview --year 2026 --out overview-2026.pdf
+    bunqctl statement --format pdf --attachments --from 2026-01-01 --to 2026-12-31 --out 2026.pdf
+    bunqctl export --account all --from 2026-01-01 --to 2026-12-31 --out 2026.json
+
+annual-overview fails for a year in which you had no active account. Attach
+receipts to payments during the year with 'tx attach' (below) so the PDF
+statement includes them.
+
+
+Pay a bill
+----------
+
+    bunqctl --env prod pay draft \
+      --to-iban NL32BUNQ2025313705 --to-name "Landlord" \
+      --amount 950.00 --description "Rent December" --dry-run      # look first
+    bunqctl --env prod pay draft \
+      --to-iban NL32BUNQ2025313705 --to-name "Landlord" \
+      --amount 950.00 --description "Rent December"
+
+In production you type the amount (950.00) to confirm. Then:
+
+1. Open the bunq app and approve the pending payment.
+2. Check: 'bunqctl --env prod pay status <draft-id>' shows ACCEPTED.
+3. Changed your mind or typo? 'bunqctl --env prod pay cancel <draft-id>'
+   (status becomes REJECTED). A draft nobody approves can also end as EXPIRED.
+
+A draft to one of your own accounts: '--to-account <A>' instead of --to-iban
+and --to-name.
+
+Sending the same command twice within 10 minutes is refused (repeat guard).
+Use --force only when you really want a second payment.
+
+
+Pay several bills at once
+-------------------------
+
+Write bills.json:
+
+    [
+      {"to_iban": "NL32BUNQ2025313705", "to_name": "Landlord",  "amount": "950.00", "description": "Rent December"},
+      {"to_iban": "NL32BUNQ2025313705", "to_name": "Utilities", "amount": "84.20",  "description": "Gas and electricity"}
+    ]
+
+    bunqctl --env prod pay batch bills.json --dry-run
+    bunqctl --env prod pay batch bills.json
+
+One draft with all payments; you approve it once in the app. If any entry is
+invalid, nothing is sent. max-amount is checked against the total.
+
+
+Move money between your own accounts
+------------------------------------
+
+    bunqctl accounts list                                  # note the ids
+    bunqctl move --to 3851794 --amount 50.00               # from the primary account
+    bunqctl move --from 3851794 --to 3851717 --amount 20.00 --description "Back to current"
+
+This is a direct payment (no draft, no app approval), allowed only between
+your own accounts.
+
+
+Save automatically
+------------------
+
+Two ways to build a "pay yourself first" habit. Both move money to an account
+you own.
+
+Keep a floor on the current account and park the rest:
+
+    bunqctl sweep --to <savings> --keep 500.00 --dry-run
+    bunqctl sweep --to <savings> --keep 500.00
+
+Save 10 percent of what others paid in during a month, once per month:
+
+    bunqctl sweep --to <savings> --percent 10 --since 2026-11-01 --until 2026-11-30
+
+Run it again for the same period and it reports "period already swept" instead
+of paying twice. Transfers between your own accounts do not count as income.
+
+In production these commands need a terminal (you type the amount), so they
+cannot run unattended; see bunqctl docs automation. A bunq standing order does
+the same job without bunqctl running:
+
+
+Standing orders
+---------------
+
+    bunqctl schedule create --to-account <savings> --amount 100.00 \
+      --every monthly --start 2026-12-01 --description "Monthly savings"
+    bunqctl schedule create --to-iban NL32BUNQ2025313705 --to-name "Gym" \
+      --amount 29.99 --every monthly --start 2026-12-05 --end 2027-12-05 --description "Gym"
+    bunqctl schedule list
+    bunqctl schedule cancel 34208
+
+Standing orders run at bunq without any approval, so treat creating one like
+making the payment. '--every weekly --interval 2' means every two weeks.
+
+
+Get paid and split bills
+------------------------
+
+Ask a person:
+
+    bunqctl request create --to friend@example.com --amount 12.50 --description "Pizza"
+    bunqctl request list
+    bunqctl request revoke 2470738            # withdraw while it is pending
+
+Share a link anyone can pay, with or without bunq:
+
+    bunqctl bunqme create --amount 20.00 --description "Concert ticket"   # prints the URL
+    bunqctl bunqme list
+    bunqctl bunqme cancel 19054
+
+
+Receipts, notes and categories
+------------------------------
+
+    bunqctl tx list --limit 5                                   # find the payment id
+    bunqctl tx note 36765845 "Lunch with the team"
+    bunqctl tx notes 36765845
+    bunqctl tx attach 36765845 ~/Downloads/receipt.pdf
+    bunqctl categories list
+    bunqctl categories create "Board games" --icon ENTERTAINMENT --color BLUE
+
+Attachments are PNG, JPEG, GIF or PDF up to 10 MB. Custom categories use one
+of nine slots.
+
+
+Lost your card for a moment
+---------------------------
+
+    bunqctl cards list
+    bunqctl --env prod cards freeze 516206
+    bunqctl --env prod cards unfreeze 516206
+
+Freezing is reversible. For a card that is truly lost or stolen, use the bunq
+app: bunqctl cannot block a card permanently on purpose.
+
+
+Script with JSON
+----------------
+
+Every list command has --json; the fields are in bunqctl docs commands.
+Examples:
+
+    # Is there money to spare?
+    bunqctl accounts list --json | jq -r '.[] | select(.type=="Bank") | .balance'
+
+    # Payments above 100 EUR this year, as CSV
+    bunqctl tx list --from 2026-01-01 --limit 0 --json \
+      | jq -r '.[] | select((.amount|tonumber|fabs) > 100) | [.date,.amount,.counterparty,.description] | @csv'
+
+    # Did the draft get approved?
+    bunqctl --env prod pay status 9948 --json | jq -r .status
+
+Exit codes make scripts simple: 0 success, 1 failure, 2 wrong usage, 3 not
+initialized, 4 cancelled. See bunqctl docs automation.
+
+
+Practice in the sandbox
+-----------------------
+
+The sandbox is the place to try anything before production.
+
+    bunqctl auth init --permitted-ip "$(curl -fsS https://api.ipify.org)"
+    bunqctl sandbox fund                              # 500.00 EUR
+    bunqctl sandbox spend --amount 12.34 --description "Coffee"
+    bunqctl pay draft --to-iban NL32BUNQ2025313705 --to-name "Sugar Daddy" --amount 5.00 --description test
+    bunqctl pay status <draft-id>
+    bunqctl move --to <second-account> --amount 10.00
+
+Sandbox funding is booked a few seconds late; wait before spending it. bunqctl
+cannot open accounts, so move and sweep need a second account that you create
+elsewhere (for example in the bunq app).

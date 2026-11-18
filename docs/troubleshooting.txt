@@ -1,0 +1,232 @@
+TROUBLESHOOTING
+===============
+
+Start with 'bunqctl auth status' (connection, IPs, session) and rerun the
+failing command with -v (method, path, status, response id). When asking bunq
+support, quote the response id from the error.
+
+
+Connection and authentication
+-----------------------------
+
+  Message or symptom        Cause                     Fix
+  ------------------------  ------------------------  ------------------------
+  not initialized: run      No profile for this       bunqctl --env <env> auth
+  'bunqctl auth init'       environment, or the       init ... for this
+  (exit 3)                  Keychain entries are      environment. Check that
+                            missing                   you did not forget
+                                                      --env prod
+
+  current IP X is not in    The public IP is not in   Connect the VPN. If the
+  the permitted IPs: check  the list given at         lookup is wrong,
+  the VPN                   registration              --skip-ip-check
+
+  no permitted IPs: a       auth init without         Pass every IP you will
+  standard API key cannot   --permitted-ip            use
+  get new IPs later, list
+  all of them
+
+  permitted IP "X" is not   IPv6, a hostname or *     Use IPv4 addresses
+  an IPv4 address
+
+  <env> is already          The environment has       auth init --force (asks
+  initialized: use --force  state                     to confirm), or auth
+  to start over                                       logout first
+
+  bunq api: 403:            Request from an IP that   VPN, auth status; if the
+  Insufficient              is not permitted, or the  key is dead, create a
+  authentication that       key was revoked           new one and auth init
+  survives renewal                                    --force
+
+  429 during auth init      The daily setup budget    Wait until the next day;
+                            (about 10 calls) is used  do not loop auth init
+                            up
+
+  response signature: ...   A proxy or filter         Try without the proxy;
+  or response is not        changed the response, or  if it persists, auth
+  signed by the server      the stored server key is  init --force
+                            stale
+
+  secret not found (exit    A Keychain entry was      auth init --force
+  3)                        deleted
+
+  keychain get ... errors   The Keychain is locked    Unlock it in Keychain
+                            or access was denied      Access; run the command
+                                                      interactively once
+
+  home directory (set HOME  bunqctl cannot tell       Set HOME or
+  or XDG_CONFIG_HOME):      where to keep its state:  XDG_CONFIG_HOME. --help,
+  $HOME is not defined      an empty environment, or  --version and docs work
+  (exit 1)                  a container               without them
+
+
+Rate limits
+-----------
+
+  Symptom                                What to do
+  -------------------------------------  -------------------------------------
+  Commands are slow on big exports       Normal: requests are spaced 500 ms
+                                         apart, 200 items per page
+
+  bunq api: 429 ... maximum of X calls   Stop other jobs that use the same
+  per Y seconds after retries            key, wait a minute, rerun
+
+
+Writes
+------
+
+  Message                   Cause                     Fix
+  ------------------------  ------------------------  ------------------------
+  an identical <op> was     The repeat guard saw the  If it is really
+  sent at HH:MM: use        same request in the last  intended: --force
+  --force to send it again  10 minutes
+
+  amount X is above         The max-amount limit      config set max-amount
+  max_amount Y                                        <higher or none> after
+                                                      thinking about it
+
+  confirmation needs a      A prompt but no terminal  Add --yes. Production
+  terminal (exit 4)         (cron, pipe)              money writes always need
+                                                      a terminal; see bunqctl
+                                                      docs automation
+
+  cancelled (exit 4)        You answered no, or       Run again
+                            typed a different amount
+
+  usage: this command       A sandbox command with    These commands exist
+  needs --env sandbox       --env prod                only in the sandbox
+
+  usage: --from and --to    move or sweep with        Pick another target
+  are the same account      identical accounts
+
+  no account "X"            Unknown id or IBAN, or    bunqctl accounts list
+                            the account belongs to    --all
+                            another user
+
+  usage: IBAN ...:          A typo in the IBAN        Fix it. A recipient that
+  checksum mismatch                                   bunq does not know shows
+                                                      up as an API error
+                                                      instead
+
+  usage: description is     External IBAN             Shorten it
+  limited to 140
+  characters
+
+  usage: --to-name is                                 Add --to-name
+  required with --to-iban
+
+  usage: date X is in the   schedule create --start   Use today or later
+  past
+
+  bunq api: 400: Account    Sandbox: funding is       Wait and check accounts
+  doesn't have enough       booked a few seconds      list
+  money                     late
+
+  bunq api: 490: Cannot     The request was already   Nothing to do
+  revoke the request        answered
+
+  bunq api: 490: No         A request to an email     Update; current builds
+  monetary account found    without bunq account, on  send allow_bunqme
+  for alias ...             older builds
+
+
+Sweep
+-----
+
+  Output                                 Meaning
+  -------------------------------------  -------------------------------------
+  nothing to sweep                       Balance at or below --keep, or no
+                                         income in the period
+
+  period already swept by payment N      A previous sweep --percent run for
+                                         these exact dates exists. Intended;
+                                         change --percent or the dates for a
+                                         new run
+
+  use exactly one of --keep or           Pick one mode
+  --percent
+
+'sweep --percent' counts only money others paid you on the source account. If
+income arrived on another account, pass --from for that account.
+
+
+Files and documents
+-------------------
+
+  Message                                Fix
+  -------------------------------------  -------------------------------------
+  <file> exists: use --force to          Use another name or --force
+  overwrite
+
+  statement N: not ready after 2m0s      bunq took longer than 2 minutes;
+                                         rerun
+
+  statement N: bunq failed to generate   Try another period or format
+  it
+
+  No annual overview available for       Use a year in which the account
+  "2025", because you had no active      existed
+  accounts in that period
+
+  usage: ... only PNG, JPEG, GIF and     Convert the receipt
+  PDF are supported
+
+  usage: ... is larger than 10 MB        Compress the file
+
+
+Cards and categories
+--------------------
+
+  Message                                Fix
+  -------------------------------------  -------------------------------------
+  card N is still DEACTIVATED (order     The card is not active yet; bunq
+  status ...): activate it in the bunq   ignores the change
+  app first
+
+  all 9 user-defined category slots are  Free a slot in the bunq app
+  in use
+
+  usage: --color must be one of ...      Use a listed color
+
+  bunq rejects the icon                  Use an icon name from the icon field
+                                         of bunqctl categories list --json
+
+
+Output
+------
+
+  Symptom                                Fix
+  -------------------------------------  -------------------------------------
+  Table columns truncated                Descriptions are cut to fit; use
+                                         --json for full text
+
+  Dates look off by one day              Tables and --from/--to use your local
+                                         time zone; JSON dates are RFC 3339 in
+                                         UTC
+
+  insights is empty or lacks recent      bunq indexes with a delay
+  payments
+
+  Sums in jq show 567.8199999999999      jq uses floating point; round at the
+                                         end, e.g. (. * 100 | round) / 100
+
+
+Resetting
+---------
+
+  Goal                                   Steps
+  -------------------------------------  -------------------------------------
+  Start the sandbox over                 bunqctl auth logout, then auth init
+
+  Remove production state from the       bunqctl --env prod auth logout;
+  machine                                revoke the API key in the bunq app
+
+  Stuck profile file                     auth logout removes it; as a last
+                                         resort delete
+                                         ~/.config/bunqctl/<env>.json and the
+                                         Keychain entries bunqctl.<env> in
+                                         Keychain Access
+
+  Repeat guard blocks a legitimate       --force; the journal is
+  payment                                ~/.config/bunqctl/<env>-journal.json
+                                         and expires by itself

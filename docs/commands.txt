@@ -1,0 +1,585 @@
+COMMAND REFERENCE
+=================
+
+
+Tree
+----
+
+    bunqctl [--env sandbox|prod] [--json] [-v]
+    │
+    ├── auth
+    │   ├── init            --permitted-ip IP... [--api-key-stdin] [--force] [--skip-ip-check] [--region R] [--country C]
+    │   ├── status
+    │   ├── session
+    │   └── logout
+    ├── config
+    │   ├── show
+    │   └── set             max-amount <X|none>
+    │
+    │   READ
+    ├── user
+    ├── accounts
+    │   ├── list            [--all]
+    │   ├── show            <A>
+    │   └── savings
+    ├── tx
+    │   ├── list            [--account A] [--from D] [--to D] [--min X] [--max X] [--search T] [--limit N]
+    │   ├── note        W   <payment-id> <text> [--account A]
+    │   ├── notes           <payment-id> [--account A]
+    │   └── attach      W   <payment-id> <file> [--description T] [--account A]
+    ├── events              [--limit N]
+    ├── insights            [--from D] [--to D]
+    ├── limits
+    ├── cards
+    │   ├── list
+    │   ├── freeze      W   <card-id>
+    │   └── unfreeze    W   <card-id>
+    ├── categories
+    │   ├── list
+    │   └── create      W   <name> [--color C] [--icon I]
+    ├── auto-allocate
+    │   └── list
+    ├── export              --from D --to D --out FILE [--account A|all] [--force] [--min X] [--max X] [--search T]
+    ├── statement           --from D --to D --out FILE [--format pdf|csv|mt940] [--regional eu|uk] [--attachments] [--account A] [--force]
+    ├── annual-overview     --out FILE [--year Y] [--force]
+    │
+    │   MONEY
+    ├── pay
+    │   ├── draft       $   --amount X --description T (--to-iban IBAN --to-name N | --to-account A) [--account A]
+    │   ├── batch       $   <file.json> [--account A]
+    │   ├── status          <draft-id> [--account A]
+    │   └── cancel      W   <draft-id> [--account A]
+    ├── move            $   --to A --amount X [--from A] [--description T]
+    ├── sweep           $   --to A (--keep X | --percent N --since D --until D) [--from A]
+    ├── schedule
+    │   ├── list            [--account A]
+    │   ├── create      $   --amount X --start D --description T (--to-iban IBAN --to-name N | --to-account A)
+    │   │                   [--every once|daily|weekly|monthly|yearly] [--interval N] [--end D] [--account A]
+    │   └── cancel      W   <id> [--account A]
+    ├── request
+    │   ├── create      W   --to EMAIL|+PHONE|IBAN --amount X --description T [--name N] [--account A]
+    │   ├── list            [--account A]
+    │   └── revoke      W   <id> [--account A]
+    ├── bunqme
+    │   ├── create      W   --amount X --description T [--account A]
+    │   ├── list            [--account A]
+    │   └── cancel      W   <id> [--account A]
+    │
+    ├── sandbox                                   (sandbox only)
+    │   ├── fund            [--amount X] [--account A]
+    │   └── spend           --amount X [--to EMAIL|IBAN] [--name N] [--description T] [--account A]
+    ├── completion          bash|zsh|fish|powershell
+    └── docs                [topic]
+
+Symbols (A, D, X, W, $) are explained in bunqctl docs index. Aliases: account
+for accounts, card for cards, transactions for tx.
+
+
+Getting help
+------------
+
+  Command                   What you get
+  ------------------------  --------------------------------------------------
+  bunqctl --help            Environments, the safety model, exit codes and the
+                            commands in groups: Setup, Read and export, Money,
+                            Getting paid, Sandbox, Help
+
+  bunqctl <command> --help  What the command does and its defaults, the --json
+                            fields of list commands, a safety note for
+                            commands that change something, examples, and
+                            every flag
+
+  bunqctl docs              The guides of this documentation, built into the
+                            binary
+
+  bunqctl completion zsh    Shell completion
+
+
+Global flags
+------------
+
+  Flag                Default                   Description
+  ------------------  ------------------------  ------------------------------
+  --env sandbox|prod  sandbox, or $BUNQCTL_ENV  Environment
+  --json              off                       JSON instead of a table
+
+  -v, --verbose       off                       Log each request to stderr:
+                                                method, path, status, response
+                                                id
+
+  --version                                     Print the version
+
+
+Flags shared by all writes
+--------------------------
+
+Every W and $ command accepts:
+
+  Flag       Effect
+  ---------  -----------------------------------------------------------------
+  --dry-run  Print the summary and the exact request body, send nothing, exit
+             0
+
+  -y, --yes  Skip the y/N prompt
+
+$ commands also accept --force (allow an identical payment again within 10
+minutes). See bunqctl docs safety.
+
+
+Exit codes
+----------
+
+  Code  Meaning
+  ----  ----------------------------------------------------------------------
+  0     Success, including --dry-run and "nothing to sweep"
+  1     API, network or other error, or a refused write
+
+  2     Invalid arguments, unknown command, missing required flag, wrong
+        environment
+
+  3     Not initialized, or a secret is missing: run auth init
+  4     Cancelled at a confirmation prompt
+
+---
+
+
+auth
+----
+
+auth init
+~~~~~~~~~
+
+Registers this machine with bunq: installation, device, session. In the
+sandbox it first creates a sandbox user; in production it reads the API key.
+
+  Flag               Default                 Description
+  -----------------  ----------------------  ---------------------------------
+  --permitted-ip IP  required on first init  IPv4 the key may be used from.
+                                             Repeatable or comma-separated
+
+  --api-key-stdin    off                     Read the API key from stdin
+                                             (production)
+
+  --force            off                     Re-initialize an existing
+                                             environment (asks for
+                                             confirmation)
+
+  --skip-ip-check    off                     Do not check that the current
+                                             public IP is in --permitted-ip
+
+  --region           en_US                   X-Bunq-Region, language and
+                                             country, e.g. nl_NL
+
+  --country          NL                      Country code sent in
+                                             X-Bunq-Geolocation
+
+Refuses when the environment is already initialized (use --force), when no IP
+is given, when an IP is not IPv4, and when the current public IP is not in the
+list.
+
+auth status
+~~~~~~~~~~~
+
+Environment, user id, device id, permitted IPs, current public IP and session
+age. Never prints secrets. JSON: 'env, user_id, device_id, permitted_ips,
+current_ip, session_created'.
+
+auth session
+~~~~~~~~~~~~
+
+Opens a new session and stores the token. Rarely needed: sessions renew
+themselves.
+
+auth logout
+~~~~~~~~~~~
+
+Deletes the Keychain entries and the profile of the selected environment,
+after confirmation. The device stays registered at bunq; revoke the API key in
+the app if you stop using it.
+
+
+config
+------
+
+  Command                  Description
+  -----------------------  ---------------------------------------------------
+  config show              Environment, permitted IPs, region, country,
+                           max_amount. JSON: env, permitted_ips, region,
+                           country, max_amount
+
+  config set max-amount X  Refuse any money write above X (for a batch, the
+                           total). none removes the limit
+
+
+user
+----
+
+user prints the logged-in user. JSON: 'id, display_name'.
+
+
+accounts
+--------
+
+  Command                Description
+  ---------------------  -----------------------------------------------------
+  accounts list [--all]  Active accounts with IBAN and balance. --all adds
+                         closed and blocked ones
+
+  accounts show <A>      One account by id or IBAN
+  accounts savings       Savings accounts with goal and progress
+
+Table: 'ID DESCRIPTION IBAN BALANCE CUR STATUS'. JSON: 'id, type, description,
+iban, balance, currency, status'; savings adds 'goal, progress'. type is the
+bunq account type without its prefix: Bank, Savings, Joint, ...
+
+The primary account used when a command takes an optional --account is the
+first active current account (Bank).
+
+
+tx
+--
+
+tx list
+~~~~~~~
+
+Transactions of one account, newest first.
+
+  Flag         Default          Description
+  -----------  ---------------  ----------------------------------------------
+  --account A  primary account  Account
+  --from D                      First day, local time
+  --to D                        Last day, inclusive, local time
+  --min X                       Minimum absolute amount
+  --max X                       Maximum absolute amount
+
+  --search T                    Case-insensitive text in the description or
+                                counterparty name
+
+  --limit N    50               Maximum rows, 0 for all
+
+--min and --max compare the absolute amount, so '--min 10.00' finds both a
+payment of 12.00 and one of -12.00. Paging stops as soon as transactions are
+older than --from. Table: 'DATE AMOUNT CUR COUNTERPARTY DESCRIPTION ID'. JSON:
+'id, account_id, date, amount, currency, counterparty, counterparty_iban,
+description, type, balance_after'.
+
+tx note, tx notes
+~~~~~~~~~~~~~~~~~
+
+'tx note <payment-id> <text>' adds a text note. 'tx notes <payment-id>' lists
+them. JSON of notes: 'id, date, content'.
+
+tx attach
+~~~~~~~~~
+
+'tx attach <payment-id> <file>' uploads a receipt and links it to the payment.
+PNG, JPEG, GIF or PDF, at most 10 MB; the type is detected from the content,
+not the file name. --description defaults to the file name.
+
+
+events
+------
+
+'events [--limit N]' (default 25) shows the activity feed: payments, card
+transactions, requests and more, newest first. Table: 'DATE TYPE ACTION AMOUNT
+COUNTERPARTY DESCRIPTION ID'. JSON: 'id, date, action, type, account_id,
+amount, currency, counterparty, description' (the last four only when the
+event has them).
+
+
+insights
+--------
+
+'insights [--from D] [--to D]' shows spending per bunq category. Default
+period: first day of this month until now. JSON: 'category, total, currency,
+transactions'. bunq indexes new transactions with a delay, so very recent
+payments may be missing.
+
+
+limits
+------
+
+Account, card and monthly spending limits. Fields that bunq does not return
+show as -. JSON: 'limit_monetary_account, limit_monetary_account_remaining,
+limit_amount_monthly, spent_amount_monthly, limit_card_debit_maestro,
+limit_card_debit_mastercard, limit_card_replacement'.
+
+
+cards
+-----
+
+  Command                   Description
+  ------------------------  --------------------------------------------------
+  cards list                Cards with type, last four digits, name, expiry,
+                            status, linked account
+
+  cards freeze <card-id>    Set DEACTIVATED (reversible)
+  cards unfreeze <card-id>  Set ACTIVE
+
+JSON: 'id, type, product_type, status, order_status, last_digits,
+name_on_card, expiry_date, account_iban'. LOST, STOLEN and CANCELLED are
+permanent at bunq and are deliberately not available. After a change, bunqctl
+reads the card back and fails with the real status if bunq accepted the
+request but the card did not change (for example a card that is not activated
+yet).
+
+
+categories
+----------
+
+  Command                   Description
+  ------------------------  --------------------------------------------------
+  categories list           Built-in and user-defined categories. JSON:
+                            category, type, status, description, color, icon
+
+  categories create <name>  Create a category in the next free
+                            USER_DEFINED_1..9 slot; the name becomes its
+                            description
+
+'categories create' flags: --color (default BLUE; one of YELLOW, DEEP_YELLOW,
+ORANGE, HOT_PINK, RED, INDIGO, PURPLE, DEEP_PURPLE, BLUE, LIGHT_BLUE,
+DEEP_BLUE, CYAN, TURQUOISE, GREEN, FUCHSIA, DEEP_GREEN, GRAY, DARK_GRAY,
+CALM_GRAY, BLACK) and --icon (default GENERAL; see the icon column of
+'categories list --json' for valid names). There are nine slots; when all are
+active the command fails.
+
+
+auto-allocate
+-------------
+
+'auto-allocate list' shows the rules that split incoming payments (created in
+the bunq app). Read-only. JSON: 'id, type, status, trigger_amount'.
+
+
+export
+------
+
+Writes all matching transactions to a JSON file, newest first. Same schema as
+'tx list --json'.
+
+  Flag                    Default          Description
+  ----------------------  ---------------  -----------------------------------
+  --from D, --to D        required         Period, local days, --to inclusive
+  --out FILE              required         Output file
+
+  --account A|all         primary account  all exports every account,
+                                           including closed ones
+
+  --force                 off              Overwrite an existing file
+  --min, --max, --search                   Same as tx list
+
+The file is written atomically with mode 0600 and never overwritten without
+--force. Unlike 'tx list', there is no row limit.
+
+
+statement
+---------
+
+Downloads an official statement generated by bunq. bunqctl requests it, waits
+(up to 2 minutes), and saves the file.
+
+  Flag              Default          Description
+  ----------------  ---------------  -----------------------------------------
+  --from D, --to D  required         Period
+  --out FILE        required         Output file
+  --format          pdf              pdf, csv or mt940
+
+  --regional        eu               CSV only: eu = semicolon-separated, uk =
+                                     comma-separated
+
+  --attachments     off              PDF only: include receipts and other
+                                     attachments
+
+  --account A       primary account  Account
+  --force           off              Overwrite an existing file
+
+
+annual-overview
+---------------
+
+'annual-overview --out FILE [--year Y]' downloads the yearly overview as a PDF
+(useful for taxes). Default year: last year. bunq refuses years in which you
+had no active account.
+
+
+pay
+---
+
+Payments to other people are drafts: bunqctl creates them, you approve them in
+the bunq app.
+
+pay draft
+~~~~~~~~~
+
+  Flag                          Default          Description
+  ----------------------------  ---------------  -----------------------------
+  --amount X                    required         Amount in EUR
+
+  --description T               required         At most 140 characters for
+                                                 external IBANs
+
+  --to-iban IBAN and --to-name                   An external recipient. The
+  N                                              name is required
+
+  --to-account A                                 One of your own accounts
+                                                 instead. Exactly one of
+                                                 --to-iban and --to-account
+
+  --account A                   primary account  Source account
+
+Prints 'created draft N' on success. The draft appears in the bunq app as a
+pending payment.
+
+pay batch
+~~~~~~~~~
+
+'pay batch <file.json>' creates one draft with 1 to 350 payments, approved
+once. The file is a JSON array:
+
+    [
+      {"to_iban": "NL32BUNQ2025313705", "to_name": "Landlord", "amount": "950.00", "description": "Rent December"},
+      {"to_iban": "NL32 BUNQ 2025 3137 05", "to_name": "Utilities", "amount": "84.20", "description": "Gas and electricity"}
+    ]
+
+The whole file is validated first (IBAN checksums, amounts, required fields,
+description length); nothing is sent if any entry is invalid. max-amount
+applies to the total.
+
+pay status, pay cancel
+~~~~~~~~~~~~~~~~~~~~~~
+
+'pay status <draft-id>' shows PENDING, ACCEPTED, REJECTED or EXPIRED, the
+number of entries and the total. JSON: 'id, status, entries, total'.
+'pay cancel <draft-id>' rejects a pending draft. bunqctl never sends ACCEPTED:
+only the bunq app can approve a draft.
+
+
+move
+----
+
+'move --to A --amount X [--from A] [--description T]' pays from one of your
+accounts to another one, directly, without a draft. Both accounts must be
+yours; moving to the same account is refused. Default description:
+'bunqctl move'.
+
+
+sweep
+-----
+
+Moves money to another own account, in a form suited to repeat runs.
+
+  Mode                             What it moves
+  -------------------------------  -------------------------------------------
+  --keep X                         Everything above X on the source account.
+                                   Nothing happens when the balance is at or
+                                   below X
+
+  --percent N --since D --until D  N percent (1 to 100) of the money other
+                                   people paid you on the source account in
+                                   the period. Transfers between your own
+                                   accounts do not count
+
+--percent runs once per period: the payment description
+'bunqctl sweep N% D..D' is the marker, and a second run for the same period
+reports "period already swept" and exits 0. Exactly one of --keep and
+--percent is required; --since and --until go with --percent.
+
+
+schedule
+--------
+
+Standing orders. A scheduled payment runs without approval in the app.
+
+  Command               Description
+  --------------------  ------------------------------------------------------
+  schedule list         Standing orders of an account. JSON: id, status,
+                        amount, counterparty, counterparty_iban, description,
+                        every, start, end
+
+  schedule create       Create one
+  schedule cancel <id>  Delete one
+
+'schedule create' flags: --amount, --description, '--start D' (all required),
+recipient (--to-iban with --to-name, or --to-account), '--every
+once|daily|weekly|monthly|yearly' (default monthly), '--interval N' (default
+1; '--every weekly --interval 2' is every two weeks), '--end D',
+'--account A'. --start is local midnight of that day and may not be in the
+past.
+
+
+request
+-------
+
+  Command              Description
+  -------------------  -------------------------------------------------------
+  request create       Ask someone to pay you
+
+  request list         Sent requests. JSON: id, date, status, amount,
+                       counterparty, description
+
+  request revoke <id>  Withdraw a pending request
+
+'request create --to EMAIL|+PHONE|IBAN --amount X --description T [--name N]'.
+An IBAN needs --name. Requests are created with bunq.me enabled, which bunq
+requires for payers without a bunq account. Requests that were already
+answered cannot be revoked.
+
+
+bunqme
+------
+
+Shareable payment links.
+
+  Command                                Description
+  -------------------------------------  -------------------------------------
+  bunqme create --amount X               Prints the link (with --json, the
+  --description T                        whole record)
+
+  bunqme list                            Links with status such as
+                                         WAITING_FOR_PAYMENT or CANCELLED.
+                                         JSON: id, date, status, amount,
+                                         description, url
+
+  bunqme cancel <id>                     Close a link
+
+
+sandbox
+-------
+
+Only available with '--env sandbox'; in production they exit with code 2.
+
+  Command                                Description
+  -------------------------------------  -------------------------------------
+  sandbox fund [--amount X] [--account   Request money from
+  A]                                     sugardaddy@bunq.com. Default and
+                                         maximum 500.00 EUR. It is booked a
+                                         few seconds later
+
+  sandbox spend --amount X [--to         A direct payment to create test
+  EMAIL|IBAN] [--name N] [--description  transactions. Default recipient
+  T] [--account A]                       sugardaddy@bunq.com; --name is
+                                         required for an IBAN
+
+
+docs
+----
+
+docs lists the guides that are built into the binary. 'docs <topic>' prints
+one as plain text. It works offline, needs no setup and no home directory, and
+always matches the installed version.
+
+Topics: index, getting-started, commands, use-cases, safety, automation,
+troubleshooting, api-notes, building, architecture. File names with .txt are
+accepted too.
+
+    bunqctl docs
+    bunqctl docs safety
+    bunqctl docs use-cases | less
+
+--json on the list prints topic and summary.
+
+
+completion
+----------
+
+'completion bash|zsh|fish|powershell' prints a shell completion script.

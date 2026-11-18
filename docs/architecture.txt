@@ -1,0 +1,309 @@
+ARCHITECTURE
+============
+
+For people who change the code. The aim: a new bunq feature is one API method
+plus one command, and everything else (signing, retries, output, safety) is
+shared.
+
+
+Layers
+------
+
+    cmd/bunqctl/main.go        entry point; Ctrl+C cancels the context
+            |
+    internal/cli               cobra commands, flags, prompts, the write guard
+            |            \
+    internal/auth           internal/output, journal, money, iban, publicip
+            |
+    internal/bunq              API client: transport + one file per resource
+            |
+    internal/profile, secret, atomicfile      local state, Keychain, safe file writes
+
+Dependencies only point downwards. internal/bunq knows nothing about the CLI,
+the Keychain or the filesystem.
+
+
+Packages
+--------
+
+  Package                      Responsibility
+  ---------------------------  -----------------------------------------------
+  internal/bunq                HTTP client and one file per API resource
+                               (account, payment, draft, card, schedule,
+                               statement, ...)
+
+  internal/auth                Handshake (Init), session lifecycle (Token,
+                               Renew), Client() that returns an authenticated
+                               bunq.Client. Implements bunq.TokenSource
+
+  internal/profile             Per-environment JSON state in
+                               ~/.config/bunqctl, IP validation, environment
+                               names and base URLs
+
+  internal/secret              Keychain store and an in-memory store for tests
+                               (Memory)
+
+  internal/cli                 One file per command group, root.go wires them.
+                               guard.go is the write guard, scope.go resolves
+                               accounts and payees, prompt.go handles terminal
+                               input, help.go holds all help texts and command
+                               groups, docs.go the docs command
+
+  internal/output              Column[T], List (table or JSON), Fields, Value
+  internal/journal             Request fingerprints for the repeat guard
+  internal/money               Amounts as integer cents; no floats
+  internal/iban                Normalize and mod 97 validation
+  internal/atomicfile          Write-then-rename with mode 0600
+  internal/publicip            Public IPv4 lookup
+
+  internal/bunqtest            Fake bunq server for tests: signs responses
+                               like bunq, verifies request signatures
+
+  docs (package docs)          Embeds docs/*.txt into the binary for bunqctl
+                               docs
+
+
+Request lifecycle
+-----------------
+
+Everything goes through bunq.Client.roundTrip:
+
+1. limiter.wait: at least 500 ms between requests.
+2. Build the request: User-Agent, Cache-Control, language, region,
+   geolocation, a fresh request id, the token from TokenSource, and
+   X-Bunq-Client-Signature when there is a body.
+3. Send, read the response (16 MB limit).
+4. Status below 300: verify X-Bunq-Server-Signature over the response body,
+   return the body.
+5. 401 or 403 with a TokenSource: renew the session once and repeat.
+6. 429: wait with exponential backoff derived from "X calls per Y seconds" in
+   the message, up to 5 retries.
+7. Anything else: return an *APIError with status, bunq messages and the
+   response id.
+
+do wraps roundTrip for JSON in and out; download and upload use the raw body
+(statements, attachments).
+
+
+Response handling helpers
+-------------------------
+
+bunq wraps every item as {"Response":[{"TypeName":{...}}]}. response.go hides
+that:
+
+  Helper                                 Use
+  -------------------------------------  -------------------------------------
+  get[T](ctx, c, path, types...)         GET one object
+  create(ctx, c, path, body)             POST, returns the new id
+  update, remove                         PUT and DELETE
+  download, upload                       Raw bodies
+
+  c.list(ctx, path, query) /             Iterate a listing across pages
+  listAs[T](ctx, c, path, query)         (iter.Seq2); stop early by breaking
+                                         out of the loop
+
+  first[T](env, types...)                Decode a typed item from an envelope
+                                         (used by the handshake)
+
+A type that must remember the bunq type name (accounts: MonetaryAccountBank,
+MonetaryAccountSavings, ...) implements setType(string); listAs calls it.
+
+
+Adding a feature
+----------------
+
+Example: a read command 'bunqctl foo list' for the endpoint
+'GET /user/{id}/foo'.
+
+1. The API method, internal/bunq/foo.go:
+
+    package bunq
+
+    // Foo is ...
+    type Foo struct {
+    	ID   int    `json:"id"`
+    	Name string `json:"name"`
+    }
+
+    // Foos iterates the user's foos.
+    func (c *Client) Foos(ctx context.Context, userID int) iter.Seq2[Foo, error] {
+    	return listAs[Foo](ctx, c, apiPath("user", userID, "foo"), nil)
+    }
+
+Look up the real field names in the bunq OpenAPI spec (swagger.json in the
+bunq/doc repository), and probe the sandbox: the spec and the real answers
+differ sometimes (see bunqctl docs api-notes).
+
+2. The command, internal/cli/foo.go:
+
+    type fooView struct { // the stable --json schema
+    	ID   int    `json:"id"`
+    	Name string `json:"name"`
+    }
+
+    func newFooCmd(a *app) *cobra.Command {
+    	cmd := &cobra.Command{Use: "foo", Short: "..."}
+    	cmd.AddCommand(&cobra.Command{
+    		Use: "list", Short: "List foos", Args: cobra.NoArgs,
+    		RunE: func(cmd *cobra.Command, _ []string) error {
+    			c, userID, err := a.session()
+    			if err != nil {
+    				return err
+    			}
+    			foos, err := collect(c.Foos(cmd.Context(), userID))
+    			if err != nil {
+    				return err
+    			}
+    			return output.List(a.printer(), foos,
+    				func(f bunq.Foo) fooView { return fooView{f.ID, f.Name} },
+    				[]output.Column[bunq.Foo]{
+    					{Header: "ID", Value: func(f bunq.Foo) string { return strconv.Itoa(f.ID) }},
+    					{Header: "NAME", Value: func(f bunq.Foo) string { return f.Name }},
+    				})
+    		},
+    	})
+    	return cmd
+    }
+
+3. Register it in newRootCmd (root.go), and for a new top-level command add it
+to groupOf in help.go.
+
+Help: add an entry for the command path to helpTable in help.go:
+'read(long, examples...)' for a read, write(...) for a change, spend(...) for
+money. 'go test ./internal/cli' fails until every command has a description
+and an example, every example is a valid command line (cobra parses it), every
+flag has a description, and every command with --dry-run has a safety
+paragraph.
+
+4. A write command adds the guard:
+
+    var wf *writeFlags
+    cmd := &cobra.Command{ ... RunE: func(cmd *cobra.Command, args []string) error {
+    	body := bunq.NewFoo{...}
+    	ch := change{op: "foo create", body: body, summary: [][2]string{{"Name", name}},
+    		amount: cents}                       // amount only for money writes
+    	if ok, err := a.approve(ch, wf); err != nil || !ok {
+    		return err                           // refused, or --dry-run
+    	}
+    	id, err := c.CreateFoo(cmd.Context(), userID, body)
+    	if err != nil {
+    		return err
+    	}
+    	fmt.Fprintf(a.errOut, "created foo %d\n", id)
+    	return a.recordWrite(ch, wf)             // feeds the repeat guard (money writes)
+    }}
+    wf = addWriteFlags(cmd, true)               // true when the command moves money
+
+Use the shared helpers: a.session(), 'a.withAccount(cmd, ref)', accountFlag,
+payee, eur(cents), checkNotExists and a.writeOutput for files, newIDActionCmd
+for "act on an object by id".
+
+5. Tests: an API test with bunqtest.New in internal/bunq, logic tests in
+internal/cli, and a step in the integration test. Then 6. docs:
+docs/commands.txt (the tree and the reference). A new guide file in docs/ also
+needs an entry in docTopics (internal/cli/docs.go); a test fails otherwise.
+
+
+Conventions
+-----------
+
+- Follow Effective Go (https://go.dev/doc/effective_go), the Google Go style
+  guide (https://google.github.io/styleguide/go/) and the project's Go
+  instructions; run gofmt and 'go vet'.
+- Wrap errors with context (%w); lowercase messages without trailing
+  punctuation. Check errors with errors.Is and errors.As.
+- Usage mistakes are usageErr(...) (exit 2); errCancelled is exit 4;
+  auth.ErrNotInitialized and secret.ErrNotFound are exit 3. exitCode in
+  root.go is the single mapping.
+- No package-level state; dependencies are passed in (app holds the secret
+  store factory, streams and flags).
+- Money is money.Cents or a string from bunq, never float64.
+- Comments explain why. Document exported names.
+- Keep dependencies minimal: cobra, go-keyring, golang.org/x/term.
+
+
+Testing
+-------
+
+  Layer       How
+  ----------  ----------------------------------------------------------------
+  bunq        bunqtest.New runs a fake server that signs responses and checks
+              request signatures; tests cover headers, renewal on 401 and 403,
+              backoff on 429, pagination, signature failures
+
+  auth        A fake API for the whole handshake plus an in-memory store
+              (secret.Memory)
+
+  cli         Pure logic (filters, guard, batch parsing, payee resolution)
+              with testApp, a temp config dir and an initialized profile
+
+  Help        help_test.go walks the command tree: descriptions, examples run
+              through cobra's own validation, flag descriptions, safety
+              paragraphs; docs_test.go checks the embedded guides and their
+              links
+
+  End to end  integration_test.go (build tag integration) runs commands
+              in-process against the real sandbox with a new sandbox user,
+              in-memory secrets and a temp config directory, so your own
+              profile and Keychain are never touched
+
+Run: 'go test -race ./...', and 'go test -tags integration -run Integration -v
+./internal/cli/' (uses 2 of the ~10 daily setup calls).
+
+move and sweep are not in the integration test: they need a second account of
+your own and bunqctl cannot open accounts. Their logic (floor, percentage,
+once-per-period marker, own-account check) is unit-tested, and they were
+checked by hand in the sandbox.
+
+
+Writing the docs
+----------------
+
+The guides are read in a terminal (bunqctl docs), so they are plain text. No
+Markdown: no #, no table pipes, no backticks, no bold.
+
+  Title              The first line, underlined with = of the same length.
+  Section            The line, underlined with -; two blank lines before it.
+  Subsection         The line, underlined with ~.
+  Prose              Wrapped at 78 columns.
+  Commands, code     Indented by four spaces and never wrapped.
+  Lists              "- item" or "1. item"; continuation lines are indented
+                     under the text.
+  Tables             Columns separated by two spaces, a line of dashes under
+                     each header, indented by two. Long cells wrap inside
+                     their own column.
+  Commands in text   In single quotes when they contain a space: 'auth init'.
+  Other guides       Write 'bunqctl docs safety'. There are no links.
+
+A guide is the file docs/<topic>.txt plus an entry in docTopics
+(internal/cli/docs.go). Test_docs_arePlainText fails on Markdown syntax,
+trailing spaces, a title without an = underline, an underline of the wrong
+length, and lines over 100 columns outside code.
+
+
+Decisions worth knowing
+-----------------------
+
+  Decision                               Reason
+  -------------------------------------  -------------------------------------
+  Drafts for payments to others          The app approval is a second factor
+                                         that the CLI cannot bypass
+
+  Direct payments only to own accounts   Automation of savings is useful, and
+                                         money stays with the user
+
+  Prod money writes need a terminal      Unattended code must not move real
+                                         money
+
+  One roundTrip for everything           Signing, verification, renewal and
+                                         backoff exist exactly once
+
+  Own JSON schema per command            bunq's responses change and are
+                                         verbose; scripts need stability
+
+  State in Keychain plus a small JSON    Secrets stay out of files;
+  file                                   non-secrets stay readable and
+                                         editable
+
+  Journal on disk, 24 hours              The repeat guard works across
+                                         processes without a daemon

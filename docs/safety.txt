@@ -1,0 +1,186 @@
+SAFETY
+======
+
+bunqctl can move real money. This page lists what protects you, in the order
+the checks run, and where the protection ends.
+
+
+Design rules
+------------
+
+  Rule                                   Consequence
+  -------------------------------------  -------------------------------------
+  Sandbox is the default environment     A forgotten --env cannot touch real
+                                         money
+
+  Payments to other people are drafts    Only the bunq app can approve them;
+                                         bunqctl never sends ACCEPTED
+
+  Direct payments go only to your own    move and sweep cannot send money out
+  accounts                               of your hands
+
+  Money is never a float                 Amounts are parsed and compared as
+                                         integer cents
+
+  Reads are free, writes are guarded     See the guard below
+
+  Secrets never leave the Keychain       Not in files, logs, output or error
+                                         messages
+
+
+The write guard
+---------------
+
+Every W and $ command runs the same checks, in this order:
+
+  Step                 Applies to  What happens
+  -------------------  ----------  -------------------------------------------
+  1. Validate input    all         Amounts (12.34), IBAN checksum (mod 97),
+                                   description length (140 characters for
+                                   external IBANs), dates, ids. Failure: exit
+                                   2
+
+  2. Resolve accounts  all         Account ids and IBANs are looked up at
+                                   bunq. Unknown account: exit 1
+
+  3. Summary           all         Environment, accounts, amount and
+                                   description are printed to stderr. In
+                                   production a *** PRODUCTION *** banner
+                                   follows
+
+  4. --dry-run         all         Prints the exact request body to stdout and
+                                   stops. Exit 0, nothing sent, nothing
+                                   recorded
+
+  5. max-amount        $           Refused when the amount (batch: the total)
+                                   is above the limit from config set
+                                   max-amount
+
+  6. Repeat guard      $           Refused when an identical request was sent
+                                   in the last 10 minutes; --force overrides
+
+  7. Confirmation      all         Sandbox: y/N unless --yes. Production $:
+                                   you must type the amount, --yes does not
+                                   skip it. Without a terminal the command
+                                   fails (exit 4)
+
+  8. Send              all         After success a $ command is recorded in
+                                   the journal for the repeat guard
+
+The repeat guard fingerprints the operation and the exact request body.
+Changing the amount, recipient or description makes a different request, so it
+does not block legitimate payments.
+
+
+What each money command can and cannot do
+-----------------------------------------
+
+  Command            Moves money        Where to            Who approves
+  -----------------  -----------------  ------------------  ------------------
+  pay draft, pay     Only after         Anyone              You, in the bunq
+  batch              approval                               app
+
+  move               Immediately        Your own accounts   The guard (typed
+                                        only                amount in
+                                                            production)
+
+  sweep              Immediately        Your own accounts   The guard (typed
+                                        only                amount in
+                                                            production)
+
+  schedule create    Later, repeatedly  Anyone              Nobody: a standing
+                                                            order runs on its
+                                                            own
+
+  sandbox spend      Immediately        Anyone, but         --yes or y/N
+                                        sandbox only
+
+'schedule create' is the one command that can send money to a third party
+without a second look. Use --dry-run, double-check the IBAN, and remember
+'schedule cancel' if you change your mind.
+
+
+Cards
+-----
+
+'cards freeze' and 'cards unfreeze' only switch between DEACTIVATED and
+ACTIVE. LOST, STOLEN and CANCELLED cannot be undone at bunq; the code refuses
+them, so a typo cannot block a card for good.
+
+
+Authentication and keys
+-----------------------
+
+  Protection             Detail
+  ---------------------  -----------------------------------------------------
+  Request signing        Every request body is signed with your RSA key
+                         (SHA-256, PKCS #1 v1.5)
+
+  Response verification  Every response, including downloaded files, is
+                         checked against bunq's public key. A mismatch is an
+                         error, not a warning
+
+  IP binding             A standard API key works only from the permitted IPs.
+                         bunqctl also checks your current IP before auth init
+
+  Secrets                API key, private key and tokens live in the macOS
+                         Keychain; passed to security -i on stdin, not as
+                         process arguments
+
+  API key entry          A hidden prompt or --api-key-stdin. It cannot be
+                         given as an argument, so it stays out of shell
+                         history and ps
+
+  Logs                   --verbose prints method, path, status and response id
+                         only
+
+  Files                  Config, journal and every output file are mode 0600;
+                         the config directory is 0700; files are written
+                         atomically
+
+
+Where the protection ends
+-------------------------
+
+  Limit                                  What it means
+  -------------------------------------  -------------------------------------
+  The API key is powerful                Assume it can do what the app can do.
+                                         Anyone with the key and a permitted
+                                         IP can use it. Keep the IP list short
+                                         and keep your Keychain locked
+
+  max-amount is a local setting          It protects against mistakes, not
+                                         against someone who can edit
+                                         ~/.config/bunqctl/<env>.json
+
+  The repeat guard is local              It knows only about requests made by
+                                         bunqctl on this machine in the last
+                                         10 minutes to 24 hours
+
+  --yes removes the prompt               In the sandbox that is the point. In
+                                         production non-money writes (notes,
+                                         requests, links, card freeze) also
+                                         run with --yes
+
+  Draft approval is not tested end to    The sandbox has no app to approve a
+  end                                    draft; creating, reading and
+                                         rejecting drafts is tested, approval
+                                         by the app is bunq's side
+
+  bunq decides on limits                 bunq enforces its own limits and
+                                         fraud checks on top of these
+
+
+Good habits
+-----------
+
+1. Practice every new workflow in the sandbox first.
+2. Set max-amount right after the production 'auth init'.
+3. Use --dry-run before the first real run of anything that moves money.
+4. Read the draft in the bunq app before you approve it; the summary there is
+   the final check.
+5. If the laptop is lost or the key may be exposed: revoke the API key in the
+   bunq app, then 'auth logout' on the machine.
+6. Do not use --skip-ip-check in production unless the IP lookup service is
+   down and you know your IP.
+7. Do not export BUNQCTL_ENV=prod in a shell profile you use for experiments.

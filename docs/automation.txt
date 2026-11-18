@@ -1,0 +1,173 @@
+AUTOMATION
+==========
+
+bunqctl is built for scripts: stable JSON, clean stdout, meaningful exit
+codes. This page covers what can run unattended, and how.
+
+
+Rules for scripts
+-----------------
+
+  Topic        Rule
+  -----------  ---------------------------------------------------------------
+  Output       Results on stdout, messages and errors on stderr. Parse stdout,
+               log stderr
+
+  Format       Always add --json and parse with jq
+
+  Environment  Set BUNQCTL_ENV or pass --env; do not rely on the default in a
+               production job
+
+  Prompts      Writes ask y/N; pass --yes for unattended runs
+
+  Exit codes   0 success, 1 failure or refused write, 2 wrong usage, 3 not
+               initialized, 4 cancelled
+
+  Sessions     Renew automatically; no login step in scripts
+
+  Rate limits  The client spaces requests 500 ms apart and retries on 429 with
+               backoff (5 attempts); no extra sleeps needed
+
+  Overlap      Do not run two jobs against the same environment at once
+
+
+What can run unattended
+-----------------------
+
+  Kind                      Examples                  Unattended
+  ------------------------  ------------------------  ------------------------
+  Reads                     accounts, tx list,        Yes
+                            events, insights,
+                            limits, cards list
+
+  File downloads            export, statement,        Yes (they refuse to
+                            annual-overview           overwrite; use dated
+                                                      file names)
+
+  Non-money writes          tx note, tx attach,       Yes, with --yes
+                            request, bunqme, cards
+                            freeze, categories
+                            create
+
+  Money writes in the       pay, move, sweep,         Yes, with --yes
+  sandbox                   schedule, sandbox spend
+
+  Money writes in           pay, move, sweep,         No. Production asks you
+  production                schedule create           to type the amount, and
+                                                      that needs a terminal.
+                                                      Without one the command
+                                                      exits with code 4
+
+This is deliberate: nothing moves real money without a person at the keyboard.
+To automate payments in production use bunq itself:
+
+- 'schedule create' creates a standing order that bunq runs on its own (create
+  it once, interactively);
+- 'pay draft' or 'pay batch' run interactively, then approve in the app;
+- sweep is meant to be run by you at the end of a period, not from cron.
+
+
+Idempotency
+-----------
+
+Safe to re-run:
+
+  Command                                On a second run
+  -------------------------------------  -------------------------------------
+  export, statement, annual-overview     Exit 1: the file exists. Use a dated
+                                         name or --force
+
+  sweep --percent N --since D --until D  "period already swept", exit 0
+
+  sweep --keep X                         Moves only what is above X, so a
+                                         second run finds nothing
+
+  Money writes                           Refused for 10 minutes when the
+                                         request is identical
+
+  cards freeze / unfreeze                Same final state
+
+Not idempotent: 'schedule create' (a second run creates a second standing
+order), 'request create', 'bunqme create', 'tx note' (adds another note),
+'pay draft' after 10 minutes. Guard these in your script.
+
+
+Monthly export
+--------------
+
+~/bin/bunqctl-monthly.sh:
+
+    #!/bin/bash
+    set -euo pipefail
+
+    export BUNQCTL_ENV=prod
+    bin="$HOME/Sources/personal/bunqctl/bin/bunqctl"
+    dir="$HOME/finance"
+
+    from=$(date -v-1m +%Y-%m-01)        # first day of last month (macOS date)
+    to=$(date -v1d -v-1d +%Y-%m-%d)     # last day of last month
+    month=${from%-*}                    # 2026-10
+
+    mkdir -p "$dir"
+    "$bin" export --account all --from "$from" --to "$to" --out "$dir/$month.json"
+    "$bin" statement --format csv --from "$from" --to "$to" --out "$dir/$month.csv"
+
+The dates assume the job runs on the 1st (cron: '0 7 1 * *'), which is when
+'date -v-1m' lands in the previous month. Cron entry:
+
+    0 7 1 * * $HOME/bin/bunqctl-monthly.sh >> $HOME/finance/cron.log 2>&1
+
+The log contains only bunqctl messages (no secrets). If the job fails, the log
+has the error and the bunq response id.
+
+
+Alerting on failure
+-------------------
+
+    if ! json=$("$bin" accounts list --json); then      # stderr goes to the job log
+      osascript -e 'display notification "bunqctl failed" with title "bank"'
+      exit 1
+    fi
+    echo "$json" | jq -e '[.[] | select(.type=="Bank")] | .[0].balance | tonumber > 100' >/dev/null \
+      || osascript -e 'display notification "Balance below 100 EUR" with title "bank"'
+
+Branch on the exit code when it matters:
+
+  Code  Reaction
+  ----  ----------------------------------------------------------------------
+  3     auth init was never run for this environment, or the Keychain entries
+        are gone: fix by hand
+
+  1     Check the message: IP not permitted (VPN down), network, bunq error
+  2     A bug in your script
+
+
+Things to check on your machine
+-------------------------------
+
+  Topic        Note
+  -----------  ---------------------------------------------------------------
+  VPN          The key works only from the permitted IPs. A job that runs
+               while the VPN is down fails with 403 and exit 1
+
+  Keychain     The job needs access to the login Keychain. Whether that works
+               when you are logged out or the Keychain is locked is
+               unverified: run your job once from the scheduler and read its
+               log before trusting it
+
+  Scheduler    cron works on macOS; launchd is the native alternative. Either
+               may need permissions to run user scripts (unverified): test it
+
+  Setup calls  Never call auth init from a script. bunq allows about 10 setup
+               calls per day
+
+
+From other languages
+--------------------
+
+bunqctl is a normal executable: call it with --json and read stdout.
+
+    import json, subprocess
+    txs = json.loads(subprocess.run(
+        ["bunqctl", "--env", "prod", "tx", "list", "--from", "2026-11-01", "--limit", "0", "--json"],
+        check=True, capture_output=True, text=True).stdout)

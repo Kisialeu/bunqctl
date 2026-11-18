@@ -1,0 +1,194 @@
+GETTING STARTED
+===============
+
+
+Requirements
+------------
+
+  Need                                   Why
+  -------------------------------------  -------------------------------------
+  macOS                                  Secrets are stored in the macOS
+                                         Keychain
+
+  Go 1.27                                To build from source
+
+  For production: a bunq personal        A standard API key is bound to the
+  account, and one or more static        IPs given at registration
+  public IPs
+
+
+Build
+-----
+
+    cd bunqctl                         # the project directory
+    go build -o bin/bunqctl ./cmd/bunqctl
+    ./bin/bunqctl --help
+
+Put bin/bunqctl on your PATH if you want to type bunqctl instead of
+./bin/bunqctl. Release builds, installation, universal binaries and build
+problems are in bunqctl docs building.
+
+
+How bunqctl is connected to bunq
+--------------------------------
+
+Understanding these four things avoids most surprises.
+
+  Concept        What it means
+  -------------  -------------------------------------------------------------
+  Environment    sandbox (fake money, instant test users) or prod (your real
+                 account). Selected with --env, or BUNQCTL_ENV. The default is
+                 sandbox. Each environment has its own keys, state and
+                 Keychain entries.
+
+  Handshake      Done once per environment by auth init: bunqctl generates an
+                 RSA key pair, registers an installation, registers this
+                 machine (the API key is bound to it), and opens a session.
+
+  Session        A short-lived token. bunqctl renews it automatically when
+                 bunq rejects it. You never log in again; auth session forces
+                 a renewal.
+
+  Permitted IPs  The public IPs the API key may be used from. With a standard
+                 key they are fixed at registration and cannot be extended
+                 later.
+
+bunq allows only about 10 setup calls (installation and device registration)
+per day. 'auth init' uses 2 of them, so do not run it in a loop.
+
+
+Sandbox quick start
+-------------------
+
+The sandbox needs no bunq account.
+
+    # 1. Find your public IP (bunqctl checks it against --permitted-ip)
+    curl -fsS https://api.ipify.org
+
+    # 2. Register: creates a sandbox user and runs the handshake
+    bunqctl auth init --permitted-ip 203.0.113.10
+
+    # 3. Get test money (up to 500.00 EUR per request, booked a few seconds later)
+    bunqctl sandbox fund
+
+    # 4. Look around
+    bunqctl accounts list
+    bunqctl tx list
+
+    # 5. Make some spending to play with
+    bunqctl sandbox spend --amount 12.34 --description "Coffee"
+    bunqctl sandbox spend --amount 7.50  --description "Lunch"
+    bunqctl tx list
+
+'auth init' prints 'initialized sandbox: user N, device N' on success. If you
+are behind a VPN, pass the VPN's IP. bunqctl checks that your current public
+IP is in --permitted-ip and refuses otherwise; --skip-ip-check disables that
+check.
+
+
+Production setup
+----------------
+
+Do this once, carefully.
+
+1. Create the API key in the bunq app: Profile, Security & Settings,
+   Developers, API keys. Create a standard key, not a wildcard key. Do not put
+   the key in a file or shell history.
+2. Decide the IPs. List every public IP you will ever run bunqctl from (for
+   example your VPN exit IPs). They cannot be added later without creating a
+   new key.
+3. Connect the VPN so the current IP is one of them.
+4. Register:
+
+       bunqctl --env prod auth init --permitted-ip 203.0.113.10 --permitted-ip 203.0.113.11
+
+   The API key is read from a hidden prompt. To pipe it in instead (for
+   example from a password manager), use --api-key-stdin:
+
+       pbpaste | bunqctl --env prod auth init --permitted-ip 203.0.113.10 --api-key-stdin
+
+5. Verify with read-only commands first:
+
+       bunqctl --env prod auth status
+       bunqctl --env prod accounts list
+       bunqctl --env prod tx list --limit 5
+
+6. Set a payment ceiling so a typo cannot move a large amount:
+
+       bunqctl --env prod config set max-amount 500.00
+
+7. Optionally 'export BUNQCTL_ENV=prod' in your shell so you can drop
+   '--env prod'. Be aware that this makes every command act on the real
+   account; prefer typing '--env prod' for anything that writes.
+
+
+Where things are stored
+-----------------------
+
+  Location                               Content
+  -------------------------------------  -------------------------------------
+  Keychain, service bunqctl.<env>        api_key, client_private_key,
+                                         installation_token, session_token
+
+  ~/.config/bunqctl/<env>.json (mode     Permitted IPs, region, country,
+  0600)                                  max_amount, the bunq server public
+                                         key, installation, device and user
+                                         ids, session creation time
+
+  ~/.config/bunqctl/<env>-journal.json   Fingerprints of money writes from the
+  (mode 0600)                            last 24 hours, used by the repeat
+                                         guard
+
+$XDG_CONFIG_HOME is honoured: files then live in $XDG_CONFIG_HOME/bunqctl/.
+The config directory is created with mode 0700. Secrets are never written to
+files, logs or output; --verbose logs only method, path, status and response
+id.
+
+
+Maintenance
+-----------
+
+  Task                                  How
+  ------------------------------------  --------------------------------------
+  Check the connection                  bunqctl auth status (shows the
+                                        permitted IPs next to your current IP)
+
+  Force a new session                   bunqctl auth session
+
+  Change the permitted IPs              Create a new API key in the app, then
+                                        bunqctl --env prod auth init --force
+                                        --permitted-ip ...
+
+  Rotate the API key                    Same as above: new key, auth init
+                                        --force
+
+  Remove everything for an environment  bunqctl --env prod auth logout (asks
+                                        for confirmation; deletes the Keychain
+                                        entries and the profile)
+
+  Start the sandbox over                bunqctl auth logout, then auth init
+                                        again
+
+  Change region or country headers      auth init --force --region nl_NL
+                                        --country NL
+
+'auth init --force' re-registers the device and uses 2 of the daily setup
+calls.
+
+
+Getting help
+------------
+
+    bunqctl --help                  # environments, safety model, exit codes, commands in groups
+    bunqctl pay draft --help        # one command: description, safety, examples, flags
+    bunqctl docs                    # list the built-in guides
+    bunqctl docs safety             # read one, offline
+
+
+Shell completion
+----------------
+
+    bunqctl completion zsh > "${fpath[1]}/_bunqctl"      # zsh
+    bunqctl completion bash > /usr/local/etc/bash_completion.d/bunqctl
+
+Run 'bunqctl completion --help' for fish and PowerShell.

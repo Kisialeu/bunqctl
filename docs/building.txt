@@ -1,0 +1,312 @@
+BUILDING BUNQCTL
+================
+
+bunqctl is a single Go program with no generated code and no external tools.
+Everything below was run on macOS (Apple Silicon) with Go 1.27.4.
+
+
+Requirements
+------------
+
+  Need                    Detail
+  ----------------------  ----------------------------------------------------
+  Go                      1.27.4 or newer. go.mod says go 1.27.4. With the
+                          default GOTOOLCHAIN=auto, an older Go downloads the
+                          required toolchain itself; with GOTOOLCHAIN=local it
+                          stops with "go.mod requires go >= 1.27.4"
+
+  Network                 Only the first build, to download the modules
+                          (proxy.golang.org). Later builds use the module
+                          cache
+
+  OS to run on            macOS: secrets are kept in the Keychain through
+                          /usr/bin/security
+
+  Other tools             None. No cgo setup, no Makefile, no code generation
+  For a universal binary  lipo (part of the Xcode command line tools)
+
+Check your Go: 'go version'.
+
+
+Quick build
+-----------
+
+Run from the project root (the directory with go.mod):
+
+    go build -o bin/bunqctl ./cmd/bunqctl
+    ./bin/bunqctl --version        # bunqctl version dev
+
+This is a development build: bigger (about 11 MB) and --version prints dev. It
+is what you want while changing the code.
+
+
+Release build
+-------------
+
+    go build -trimpath -ldflags "-s -w -X main.version=2026.11.18" -o bin/bunqctl ./cmd/bunqctl
+    ./bin/bunqctl --version        # bunqctl version 2026.11.18
+
+  Flag                 Effect
+  -------------------  -------------------------------------------------------
+  -trimpath            Removes your local paths from the binary
+
+  -s -w                Strips the symbol and debug tables (about 11 MB down to
+                       8 MB)
+
+  -X main.version=...  Sets the version that --version prints. The variable is
+                       version in cmd/bunqctl/main.go
+
+  -X main.commit=...   Optional: a commit id, printed as 1.0.0 (abc1234).
+                       Empty or unknown prints nothing
+
+Use any version string you like (a date, a tag, 'git describe --tags').
+
+
+Install
+-------
+
+Copy the binary onto your PATH:
+
+    install -m 0755 bin/bunqctl /usr/local/bin/bunqctl        # or ~/bin, if it is on PATH
+    bunqctl --version
+
+Or let Go put it into '$(go env GOBIN)' (default '$(go env GOPATH)/bin',
+usually ~/go/bin):
+
+    go install -trimpath -ldflags "-s -w -X main.version=2026.11.18" ./cmd/bunqctl
+
+'go install' without -ldflags works too, but the version stays dev. Make sure
+the target directory is on your PATH.
+
+Rebuilding or replacing the binary does not touch your state: the Keychain
+entries and ~/.config/bunqctl/ stay as they are.
+
+
+Universal binary (Apple Silicon and Intel)
+------------------------------------------
+
+    for arch in arm64 amd64; do
+      GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=2026.11.18" \
+        -o bin/bunqctl-$arch ./cmd/bunqctl
+    done
+    lipo -create -output bin/bunqctl bin/bunqctl-arm64 bin/bunqctl-amd64
+    lipo -info bin/bunqctl          # x86_64 arm64
+
+Cross-compiling needs nothing extra.
+
+
+Release script
+--------------
+
+Checks first, then builds, so a broken tree never produces a binary. Save as
+release.sh next to go.mod and 'chmod +x release.sh':
+
+    #!/bin/bash
+    # Build a universal macOS binary. Usage: release.sh [version]   (output: $OUT, default ./dist)
+    set -euo pipefail
+    cd "$(dirname "$0")"
+    version=${1:-$(date +%Y.%m.%d)}
+    out=${OUT:-dist}
+
+    go vet ./...
+    go test -race ./...
+
+    mkdir -p "$out"
+    for arch in arm64 amd64; do
+      GOOS=darwin GOARCH=$arch go build -trimpath \
+        -ldflags "-s -w -X main.version=$version" \
+        -o "$out/bunqctl-$arch" ./cmd/bunqctl
+    done
+    lipo -create -output "$out/bunqctl" "$out/bunqctl-arm64" "$out/bunqctl-amd64"
+    rm "$out/bunqctl-arm64" "$out/bunqctl-amd64"
+    shasum -a 256 "$out/bunqctl"
+    "$out/bunqctl" --version
+
+'./release.sh 1.0.0' leaves dist/bunqctl and prints its SHA-256. Keep bin/ and
+dist/ out of version control (they are build output).
+
+
+Verify a build
+--------------
+
+    bunqctl --version                              # the version you set
+    file bin/bunqctl                               # Mach-O 64-bit executable arm64
+    go version -m bin/bunqctl                      # Go version, module, dependencies, build flags
+    shasum -a 256 bin/bunqctl                      # compare with a checksum you recorded
+    bunqctl --help                                 # smoke test: prints the command list
+
+'go version -m' shows exactly which dependency versions are inside (cobra,
+pflag, go-keyring, x/sys, x/term) and -trimpath=true for a release build.
+
+
+Checks before you rely on a build
+---------------------------------
+
+    gofmt -l .                                     # prints nothing when formatted
+    go vet ./...
+    go test -race ./...                            # unit tests, no network or Keychain
+    go mod verify                                  # downloaded modules match their checksums
+    go mod tidy -diff                              # go.mod and go.sum are tidy
+
+The end-to-end test needs the network and uses 2 of the ~10 daily bunq setup
+calls:
+
+    go test -tags integration -run Integration -v ./internal/cli/
+
+
+Dependencies
+------------
+
+  Module                         Why
+  -----------------------------  ---------------------
+  github.com/spf13/cobra         Commands and flags
+  github.com/zalando/go-keyring  macOS Keychain
+  golang.org/x/term              Hidden API key prompt
+
+Everything else is the standard library. To fetch modules before going
+offline: 'go mod download'.
+
+
+Build in Docker
+---------------
+
+The Dockerfile in the project root builds bunqctl the same way as the other Go
+services: golang:1.27.4-alpine3.23 as the builder, CGO_ENABLED=0, -trimpath,
+cache mounts for modules and the build cache, and a scratch runtime image that
+runs as 65532. It needs Docker with BuildKit (the default in current Docker).
+The first build downloads the base image and the docker/dockerfile:1.7
+frontend.
+
+The stages are chosen with --target:
+
+  Stage      What it is                       Command
+  ---------  -------------------------------  --------------------------------
+  artifacts  Only the binary, to copy out of  docker build --target artifacts
+             the build                        --output type=local,dest=dist .
+
+  test       gofmt, go vet, go test (no       docker build --target test .
+             -race: it needs cgo)
+
+  (default)  A small Linux image for --help,  docker build -t bunqctl:dev .
+             --version and docs
+
+Which system the binary is for:
+
+  You want                               Add to the artifacts command
+  -------------------------------------  -------------------------------------
+  The platform of the build (Linux when  nothing
+  Docker runs in a Linux VM, as on
+  Docker Desktop)
+
+  A macOS binary for Apple Silicon       --build-arg GOOS=darwin --build-arg
+                                         GOARCH=arm64
+
+  A macOS binary for Intel               --build-arg GOOS=darwin --build-arg
+                                         GOARCH=amd64
+
+  Linux for a given CPU                  --platform linux/amd64 (or
+                                         linux/arm64)
+
+Version and commit, as in the other projects' Makefiles:
+
+    docker build --target artifacts --output type=local,dest=dist \
+      --build-arg GOOS=darwin --build-arg GOARCH=arm64 \
+      --build-arg VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)" \
+      --build-arg COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" .
+    dist/bunqctl --version
+
+Outside a git repository the two fall back to dev and unknown, and --version
+then prints just dev.
+
+The runtime image is not a place to use bunqctl for real. It holds no Keychain
+and no home directory, so 'bunqctl accounts list' in it fails with 'home
+directory (set HOME or XDG_CONFIG_HOME)'. What works in it is
+'docker run --rm bunqctl:dev --version' and 'docker run --rm bunqctl:dev docs
+safety'. Use the macOS binary on your Mac for the real thing.
+
+Notes:
+
+- The docs are compiled into the binary ('bunqctl docs'), so docs/ must be in
+  the build context. .dockerignore leaves it in on purpose; do not add a
+  catch-all *.txt there. Without docs/*.txt the build fails with
+  'pattern *.txt: no matching files found'.
+- 'go test -race ./...' and the integration test run on your machine, not in
+  the image.
+
+Verified with Docker 29.1.2 on an Apple Silicon Mac (2026-11-18):
+
+  Build                                  Result
+  -------------------------------------  -------------------------------------
+  --target test                          gofmt, vet and all unit tests pass
+                                         inside the Linux container
+
+  --target artifacts with GOOS=darwin    A Mach-O arm64 binary of about 8 MB
+  GOARCH=arm64                           that runs on the Mac; --version shows
+                                         1.0.0 (abc1234) and docs works
+
+  default image                          bunqctl:dev, 11.9 MB, linux/arm64, 4
+                                         layers, user 65532:65532, entrypoint
+                                         /bunqctl
+
+Not tried: running the image with 'docker run', and building with
+'--platform linux/amd64'.
+
+
+Other platforms
+---------------
+
+The code compiles for other systems ('GOOS=linux GOARCH=amd64 go build
+./cmd/bunqctl' succeeds), but bunqctl is built and tested for macOS only. The
+Keychain code (go-keyring) uses other backends elsewhere (the Linux Secret
+Service, the Windows Credential Manager); that was not tried, so treat
+anything but macOS as unsupported.
+
+
+Clean up
+--------
+
+    rm -rf bin dist                                # build output
+    go clean -cache                                # Go build cache (optional, slows the next build)
+
+
+Build problems
+--------------
+
+  Message                       Cause                   Fix
+  ----------------------------  ----------------------  ----------------------
+  go: go.mod requires go >=     The installed Go is     Install Go 1.27.4 or
+  1.27.4 (running go 1.2x;      older and may not       newer, or set
+  GOTOOLCHAIN=local)            switch toolchains       GOTOOLCHAIN=auto
+
+  no required module provides   Wrong directory         cd to the project
+  package ./cmd/bunqctl or                              root, where go.mod is
+  go.mod file not found
+
+  dial tcp ...                  No network on the       Connect once and run
+  proxy.golang.org or module    first build             go mod download, or
+  lookup disabled                                       set a reachable
+                                                        GOPROXY
+
+  lipo: command not found       Command line tools are  xcode-select
+                                missing                 --install, or skip the
+                                                        universal binary and
+                                                        build for one
+                                                        architecture
+
+  --version prints dev          Built without -ldflags  Use the release build
+                                -X main.version=...
+
+  pattern *.txt: no matching    docs/*.txt is missing   Keep docs/ in the
+  files found                   from the build (a       context
+                                Docker context that
+                                leaves it out)
+
+  failed to resolve source      Docker cannot reach     Check the network; the
+  metadata for                  the registry, or the    tag is GO_VERSION +
+  docker.io/library/golang:...  tag does not exist      ALPINE_VERSION
+                                                        (--build-arg
+                                                        GO_VERSION=...)
+
+  go: updates to go.mod needed  go.mod and go.sum are   go mod tidy
+                                out of sync with the
+                                code

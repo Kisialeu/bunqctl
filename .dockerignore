@@ -1,0 +1,13 @@
+# Build output and tooling
+bin
+dist
+.git
+.gitignore
+.claude
+
+# Not needed to build. docs/*.txt IS needed: it is embedded in the binary,
+# so do not add a catch-all "*.txt" or "**/*.txt" here.
+README.md
+LICENSE
+Dockerfile
+.dockerignore

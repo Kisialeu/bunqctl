@@ -1,0 +1,84 @@
+BUNQCTL DOCUMENTATION
+=====================
+
+bunqctl is a personal command-line client for the bunq API: read accounts and
+transactions, export data, download statements, pay through drafts, move money
+between your own accounts, and script all of it. Go 1.27, macOS.
+
+
+Where to start
+--------------
+
+  You want to                                     Read
+  ----------------------------------------------  ----------------------------
+  Compile, install, make a release build          bunqctl docs building
+
+  Install, connect to the sandbox, connect to     bunqctl docs getting-started
+  production
+
+  Look up a command, its flags, output and JSON   bunqctl docs commands
+  fields
+
+  Do a concrete task (pay rent, monthly export,   bunqctl docs use-cases
+  savings, tax time)
+
+  Understand what protects your money, and what   bunqctl docs safety
+  does not
+
+  Run bunqctl from cron or a script               bunqctl docs automation
+  Something fails                                 bunqctl docs troubleshooting
+  Understand how bunq behaves in practice         bunqctl docs api-notes
+  Change or extend the code                       bunqctl docs architecture
+
+These guides are also built into the binary: 'bunqctl docs' lists them and
+'bunqctl docs safety' prints one. Every command has its own --help with a
+description, the JSON fields, a safety note and examples.
+
+
+What it does
+------------
+
+  Area                   Commands
+  ---------------------  -----------------------------------------------------
+  Authentication         auth init, auth status, auth session, auth logout
+  Accounts and balances  user, accounts list/show/savings, limits
+  Transactions           tx list, events, insights, export
+  Documents              statement (CSV, MT940, PDF), annual-overview
+  Annotations            tx note, tx notes, tx attach, categories list/create
+  Payments               pay draft/batch/status/cancel
+  Own accounts           move, sweep
+  Standing orders        schedule list/create/cancel
+  Getting paid           request create/list/revoke, bunqme create/list/cancel
+  Cards                  cards list/freeze/unfreeze
+  Rules                  auto-allocate list
+  Settings               config show, config set max-amount
+  Testing                sandbox fund, sandbox spend
+
+
+What it does not do
+-------------------
+
+- No webhooks or other real-time features. bunqctl only talks when you run it.
+- No direct payments to other people. Payments to others are drafts that you
+  approve in the bunq app. (move and sweep pay directly, but only into your
+  own accounts.)
+- No business or joint accounts: one personal user per environment.
+- No card orders, no permanent card actions (lost, stolen, cancelled).
+- No OAuth or PSD2 access to other people's accounts.
+- No currencies other than EUR for payments.
+
+
+Conventions used in these docs
+------------------------------
+
+  Symbol  Meaning
+  ------  -------------------------------------------------------------------
+  A       An account: numeric id or IBAN (spaces and lower case are accepted)
+  D       A day, YYYY-MM-DD, in local time
+  X       An amount with exactly two decimals, e.g. 12.34, in EUR
+  W       A write command: it changes something at bunq
+  $       A command that moves money
+
+Output rules: results go to stdout, summaries, messages and errors go to
+stderr. --json prints a stable schema of bunqctl's own, not raw bunq
+responses. Amounts are strings; outgoing amounts are negative.

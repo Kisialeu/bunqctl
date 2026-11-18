@@ -1,0 +1,204 @@
+BUNQ API NOTES
+==============
+
+What bunqctl relies on, and what the real API did in testing. Sources:
+https://doc.bunq.com, the bunq OpenAPI spec (bunq/doc repository,
+swagger.json), and runs against the sandbox.
+
+
+Environments
+------------
+
+               Sandbox                                 Production
+  -----------  --------------------------------------  -----------------------
+  Base URL     https://public-api.sandbox.bunq.com/v1  https://api.bunq.com/v1
+  API key      POST /sandbox-user-person returns one   Created in the bunq app
+
+  Request      Barely validated                        Required
+  signing
+
+  Money        Fake; sugardaddy@bunq.com grants up to  Real
+               500 EUR per request
+
+  Users        Created on demand                       Your account
+
+Because the sandbox hardly checks signatures, signing correctness is covered
+by unit tests, not by the sandbox.
+
+
+Authentication
+--------------
+
+  Step   Call                               Header
+                                            X-Bunq-Client-Authentication
+  -----  ---------------------------------  ----------------------------------
+  1      POST /installation with            none
+         client_public_key (PEM, 2048-bit
+         RSA)
+
+  2      POST /device-server with           installation token
+         description, secret (API key),
+         permitted_ips
+
+  3      POST /session-server with secret,  installation token
+         signed
+
+  later  any call                           session token
+
+- Responses carry X-Bunq-Server-Signature, a base64 SHA-256 PKCS #1 v1.5
+  signature of the response body. The server public key comes from step 1.
+- A standard key cannot get new IPs after step 2. A wildcard key (*) can, and
+  is less safe; bunqctl accepts IPv4 addresses only.
+- The session lifetime follows the auto-logout setting in the bunq app. A
+  request within 30 minutes of expiry extends it.
+- Setup calls (steps 1 and 2) are limited to about 10 per day.
+
+
+Rate limits
+-----------
+
+  Category                           Limit
+  ---------------------------------  ------------------------------
+  Data (accounts, payments, events)  70-140 requests per 30 seconds
+  Security-sensitive                 3 per 60 seconds
+  Setup (installation, device)       about 10 per day
+  Payment processing                 up to 1000 per second
+
+bunqctl waits at least 500 ms between requests (at most 60 per 30 seconds). On
+429 (RATE_LIMIT, message "You can do a maximum of X calls per Y seconds") it
+backs off exponentially, up to 5 retries. Whether the sandbox limits differ is
+not documented.
+
+
+Endpoints used
+--------------
+
+  Command          Endpoints
+  ---------------  ------------------------------------------------------------
+  auth init        /sandbox-user-person (sandbox), /installation,
+                   /device-server, /session-server
+
+  user             GET /user/{id}
+  accounts         GET /user/{id}/monetary-account
+
+  tx list,         GET .../monetary-account/{id}/payment
+  export, sweep
+
+  events           GET /user/{id}/event
+  insights         GET /user/{id}/insights
+  limits           GET /user/{id}/limit
+  cards            GET /user/{id}/card, GET/PUT /user/{id}/card/{id}
+
+  categories       GET /user/{id}/additional-transaction-information-category,
+                   POST
+                   .../additional-transaction-information-category-user-defined
+
+  auto-allocate    GET /user/{id}/payment-auto-allocate
+  statement        POST/GET .../customer-statement, .../{id}/content
+  annual-overview  POST /user/{id}/export-annual-overview, .../{id}/content
+  pay              POST/GET/PUT .../draft-payment
+
+  move, sweep,     POST .../payment
+  sandbox spend
+
+  schedule         GET/POST .../schedule-payment, DELETE
+                   .../schedule-payment/{id}
+
+  request,         POST/GET/PUT .../request-inquiry
+  sandbox fund
+
+  bunqme           POST/GET/PUT .../bunqme-tab
+
+  tx note, tx      POST/GET .../payment/{id}/note-text
+  notes
+
+  tx attach        POST .../attachment (raw file), POST
+                   .../payment/{id}/note-attachment
+
+
+Findings from testing
+---------------------
+
+The docs or the spec were silent or wrong on these. Each is handled in the
+code.
+
+  Finding                                Handling
+  -------------------------------------  -------------------------------------
+  An invalid session token gives 403     Renew once on 401 and 403
+  "Insufficient authentication", not
+  401
+
+  Drafts have no CANCELLED status; bunq  pay cancel sends REJECTED; the CLI
+  lists ACCEPTED, PENDING, REJECTED and  never sends ACCEPTED
+  EXPIRED as valid values of the field,
+  so ACCEPTED is also settable through
+  the API
+
+  PUT on a draft rejects                 Cancel sends only status and
+  number_of_required_accepts             previous_updated_timestamp (as the
+  ("Superfluous field")                  spec asks, read from the draft first)
+
+  The draft recipient is a Pointer       Used as is; accepted by the sandbox
+  {type, value, name} with type IBAN;
+  the spec types it as a read-only
+  label
+
+  GET /insights requires time_start and  Default period: this month
+  time_end (YYYY-MM-DD HH:MM:SS, UTC);
+  each item nests the category object
+
+  A finished statement has status        Polls for COMPLETED; FAILED stops
+  COMPLETED, not CREATED
+
+  POST /export-annual-overview fails     The error is shown. The content is
+  for years without an active account    polled; a 404 is treated as "not
+                                         ready yet" (the sandbox answered at
+                                         the first try, so this path was not
+                                         observed)
+
+  User categories are fixed slots        categories create picks the slot and
+  USER_DEFINED_1..9, always listed       defaults icon and color
+  (inactive when free); icon and color
+  are enums and both required
+
+  Creating a category returns no id      Not expected
+
+  PUT card status returns 200 even when  The card is read back and the real
+  the card cannot take it (not           status reported
+  activated)
+
+  A request to an email without bunq     Always sent
+  account needs allow_bunqme
+
+  A request that was already answered    bunq's error is shown
+  cannot be revoked
+
+  Sandbox funding is booked              Wait before spending; the integration
+  asynchronously, a few seconds after    test polls
+  the request
+
+  A monetary account's alias is a list   Decoded either way
+  of pointers (IBAN, email, ...)
+  although the spec shows one object
+
+  Timestamps are 2006-01-02              Parsed as UTC; shown in local time
+  15:04:05.000000 in UTC without a zone
+
+  Insights and some listings lag behind  Documented; the integration test does
+  new transactions                       not require insights
+
+
+Unverified
+----------
+
+  Item                          State
+  ----------------------------  ----------------------------------------------
+  Approving a draft in the app  Not testable from the CLI; bunq's side
+
+  IPv6 in permitted_ips         The spec says IPv4 or IPv6, a tutorial says
+                                IPv4 only; bunqctl accepts IPv4 only
+
+  Sandbox resets                Not documented
+  Sandbox rate limits           Not documented
+  Permissions of an API key     Assume it can do what the app can do
+  Unattended Keychain access    Depends on your macOS session; test your job

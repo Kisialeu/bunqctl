@@ -1,0 +1,12 @@
+# Build output
+/bin/
+/dist/
+/bunqctl
+
+# Tests and coverage
+*.test
+*.out
+
+# Local tooling and macOS
+.claude/
+.DS_Store
