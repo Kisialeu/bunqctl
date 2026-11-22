@@ -4,13 +4,46 @@ A personal command-line client for the [bunq](https://www.bunq.com) API. Check b
 
 bunqctl is an unofficial tool and is not affiliated with bunq. It can move real money: read [Safety](#safety) first, and try everything in the sandbox.
 
-- Go 1.27, macOS (secrets are kept in the macOS Keychain)
+[![Go Version](https://img.shields.io/badge/Go-1.27.4-00ADD8?logo=go)](go.mod)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey?logo=apple)](docs/building.txt)
+
+- Go 1.27.4, macOS (secrets are kept in the macOS Keychain)
 - One small binary, no runtime dependencies
 - The sandbox is the default environment; production has to be asked for
 
+## Installation
+
+### Homebrew (macOS)
+
+```bash
+brew tap Kisialeu/bunqctl
+brew install bunqctl
+```
+
+### Download a release binary
+
+Pre-built binaries for macOS (Apple Silicon and Intel) are available on the [releases page](https://github.com/Kisialeu/bunqctl/releases).
+
+### Build from source
+
+```bash
+go build -o bin/bunqctl ./cmd/bunqctl                                   # development build
+go build -trimpath -ldflags "-s -w -X main.version=1.0.0" -o bin/bunqctl ./cmd/bunqctl  # release build
+```
+
+Or in Docker (no Go needed on the host):
+
+```bash
+docker build --target artifacts --output type=local,dest=dist \
+  --build-arg GOOS=darwin --build-arg GOARCH=arm64 .
+```
+
+See [docs/building.txt](docs/building.txt) for universal binaries, installation, and other Docker targets.
+
 ## Quick start
 
-```
+```bash
 go build -o bin/bunqctl ./cmd/bunqctl
 
 # sandbox: fake money, nothing to lose
@@ -40,12 +73,12 @@ bunqctl tx list
 Every command has `--help` with a description, examples and a safety note. List commands take `--json` for scripts.
 
 ```
-bunqctl tx list --from 2026-11-01 --search coffee
+bunqctl tx list --from 2024-11-01 --search coffee
 bunqctl insights
-bunqctl export --account all --from 2026-01-01 --to 2026-12-31 --out 2026.json
-bunqctl statement --format mt940 --from 2026-11-01 --to 2026-11-30 --out nov.mt940
+bunqctl export --account all --from 2024-01-01 --to 2024-12-31 --out 2024.json
+bunqctl statement --format mt940 --from 2024-11-01 --to 2024-11-30 --out nov.mt940
 bunqctl pay draft --to-iban NL32BUNQ2025313705 --to-name "Landlord" --amount 950.00 --description "Rent" --dry-run
-bunqctl sweep --to 3851794 --percent 10 --since 2026-11-01 --until 2026-11-30 --dry-run
+bunqctl sweep --to 3851794 --percent 10 --since 2024-11-01 --until 2024-11-30 --dry-run
 ```
 
 ## Safety
@@ -91,21 +124,15 @@ The guides are plain text, so they read well in a terminal. They are also built 
 | [building](docs/building.txt) | Compile, release build, install, Docker |
 | [architecture](docs/architecture.txt) | Code layout, how to add a command, how to write the docs |
 
-## Build
+## Versioning
 
-```
-go build -o bin/bunqctl ./cmd/bunqctl                                   # development build
-go build -trimpath -ldflags "-s -w -X main.version=1.0.0" -o bin/bunqctl ./cmd/bunqctl
-```
+The version is set at build time via `-ldflags`:
 
-Or in Docker (no Go needed on the host). This builds the macOS binary for Apple Silicon:
-
-```
-docker build --target artifacts --output type=local,dest=dist \
-  --build-arg GOOS=darwin --build-arg GOARCH=arm64 .
+```bash
+go build -trimpath -ldflags "-s -w -X main.version=1.0.0 -X main.commit=$(git rev-parse --short HEAD)" -o bin/bunqctl ./cmd/bunqctl
 ```
 
-Universal binaries, installation and the other Docker targets are in [docs/building.txt](docs/building.txt).
+Run `bunqctl --version` to see the version and commit.
 
 ## Tests
 
